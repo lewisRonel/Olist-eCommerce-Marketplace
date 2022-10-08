@@ -1,0 +1,224 @@
+---
+title: "R Notebook final version"
+output: html_notebook
+---
+# EDA of the Olist datasets
+```{r library}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(reshape)
+library(stringr)
+library(heatmaply)
+
+```
+
+#1-Marketing Channel Effectiveness
+
+Sellers on the Olist platform come from various marketing channels (social media, referals, organic searches etc…).We will have a look at which one was the most effective at generating leads and interest from potential sellers. Marketing Qualified Lead(MQL)' are potential reseller/manufacturer who have an interest in selling their products on Olist.
+
+```{r datasets import }
+mql = read.csv("../data/olist_marketing_qualified_leads_dataset.csv")
+#parse first contact as Date
+mql$first_contact_date = as.Date(mql$first_contact_date,tz="UTC" ,format="%Y-%m-%d")
+
+#create new date colmn in ormat y-m
+mql$date_ym = format(as.Date(mql$first_contact_date), format="%Y-%m")
+
+#replace empty cells with NA in each column
+mql_upd = mql %>% 
+  mutate(origin = na_if(origin, ""))
+#check the number of NA
+colSums(is.na(mql_upd))
+```
+
+there are 60 NA values in origin, we will replace those values with "others"
+```{r}
+#group all blank cells into "others"
+mql_2 = mql_upd %>% mutate(origin = replace_na(origin, "others"))
+
+#now remove mql_upd
+#rm(mql_upd)
+
+#create a new dataframe with montly count of mql_id 
+mql_monthly = mql_2 %>% 
+  group_by(date_ym) %>%
+  summarise(mql_id_count = n())
+
+#plot the volume of mql over the dates
+ggplot(data=mql_monthly,aes(x=date_ym,y=mql_id_count,group=1)) +
+  geom_line(color="blue")+
+  geom_point()+
+  labs(title="MQL Volume (Jun 2017 - May 2018)", fontsize=14)
+
+```
+Something happened in January 2018, which made the volume of MQL soar to over
+1000, it has been on an upward trajectory since then
+
+#MQL Volume by Marketing Channel
+* The type of marketing channel is recorded in 'origin' field.
+```{r}
+
+#new dataframe
+mql_origin = subset(mql_2, select=c(date_ym,origin))
+
+#create a new column for count
+mql_origin = mql_origin %>% 
+  group_by(date_ym,origin) %>%
+  summarise(mql_id_count = n())
+
+#visualize with heat map
+ggplot(data = mql_origin,aes(x=date_ym,y=origin)) +
+  geom_tile(aes(fill=mql_id_count),show.legend = TRUE)+
+  scale_fill_distiller(palette = "YlGnBu",direction=1)+
+  theme_light() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1)) #rotate x-axis t
+
+```
+-The channels that generate the most lead are organic searches followed by 
+paid-searches.
+- Since April 2018, the channel 'social' has generated more or less the same as 
+paid searches.
+-Should the cost of paid search increase, it would be wise to look at social 
+media as an alternative.
+
+#2. Sales Performance Overview
+* A MQL who finally signed up for seller is called a closed deal.
+
+Once a MQL has filled a form on one of the landing pages to sign up to be a 
+seller on the platform, a Sales Development Representative(SDR) get in touch with
+the MQL and gathers more information about the lead. 
+A Sale representative(SR) then discuss with the lead. The interaction between 
+SDRs/SRs and MQLs is one of the things that determine whether a MLQ sign up to 
+become a seller on the platform.
+
+In the following section I will explore two aspects of sales result: conversion rate and sales length.
+```{r}
+cl_deals = read.csv("../data/olist_closed_deals_dataset.csv")
+
+#parsing won_date as datetime
+cl_deals$won_date = as_datetime(cl_deals$won_date, format="%Y-%m-%d %H:%M:%S")
+
+#merging this dataset and the MQL dataset
+merged_data = merge(mql,cl_deals,by="mql_id",all.x = TRUE) #all.x=TRUE is left.Join()
+
+#replace all empty cells in cl_deals and merged_data by NA
+
+cl_deals_upd = subset(cl_deals,select=-c(won_date)) %>% na_if("")
+cl_deals_upd$won_date = cl_deals$won_date
+
+merged_data_upd = merged_data[,c(1:8,10:18)] %>% na_if("")
+merged_data_upd$won_date = merged_data$won_date
+
+#In merged_data replace all NA in origin with "others"
+merged_data_upd = merged_data_upd %>% mutate(origin = replace_na(origin, "others"))
+
+ 
+```
+
+```{r}
+#create a new column that holds true if the MLQ signs in,  and false otherwise
+merged_data_upd$sign_in_bool = !is.na(merged_data_upd$seller_id)
+
+#compute count of monthly closed_deals 
+monthly_cl = merged_data_upd %>% 
+  subset(select=c(date_ym,sign_in_bool)) %>% 
+  group_by(date_ym) %>% 
+  summarise(monthly_dl_closed = sum(sign_in_bool))
+
+#plot the relationship
+
+ggplot(data=monthly_cl, aes(x=date_ym,y=monthly_dl_closed,group=1))+
+  geom_line(color="blue")+
+  geom_point()+
+  labs(title='Closed Deal Volume (Jun 2017 - May 2018)',y="signing", fontsize=14)+
+  theme_light() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))
+```
+similar to the MQL lead volume, the volume of sign ins has drastically increased 
+starting january 2018
+
+#How many of the MQL ended up signing to become sellers?
+```{r}
+signing_rate = merged_data_upd %>% 
+  subset(select=c(date_ym,sign_in_bool)) %>% 
+  group_by(date_ym) %>% 
+  summarise(monthly_dl_closed = sum(sign_in_bool),monthly_dl_count=n()) %>% 
+  mutate(signing_rate_in_percentage=100*(monthly_dl_closed/monthly_dl_count))
+
+#round the percentage values to 1 decimal place
+signing_rate$signing_rate_in_percentage =
+  round(signing_rate$signing_rate_in_percentage, digits=1)
+
+#visualizing the relationship
+ggplot(data=signing_rate, aes(x=date_ym,y=signing_rate_in_percentage,group=1))+
+  geom_line(color="blue")+
+  geom_point()+
+  labs(title='Conversion Rate (Jun 2017 - May 2018)',y="Signing rate in %", fontsize=14)+
+  theme_light() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))
+```
+#Digging into Closed Deal¶
+Before move on to the next subject, I will explore closed deals in more depth to see whether there is room for improvement in sales process. Specifically looking at how behaviour profile affect the chance of closing a deal
+
+#Attributes of a closed deals
+```{r}
+#a look at the differents type of behavior profile of the MQL
+cd_profile  = subset(cl_deals_upd, is.na(cl_deals_upd$lead_behaviour_profile) ==FALSE)
+
+cd_profile %>% 
+  group_by(lead_behaviour_profile) %>% 
+  summarise(count = n()) %>% 
+  arrange(desc(count))
+
+# Combine the four types of mixed profiles(2.4%) into 'others'
+mixed_profiles =list('cat, wolf', 'eagle, cat', 'eagle, wolf', 'shark, cat', 'shark, wolf')
+
+  cd_profile$lead_behaviour_profile[cd_profile$lead_behaviour_profile %in% mixed_profiles] <- 'other profiles'
+  
+#look at the profiles and the count of seller id associated with each
+  cd_profile %>% 
+    group_by(lead_behaviour_profile) %>% 
+    summarise(count = n())
+#plot this
+cd_profile %>% 
+    group_by(lead_behaviour_profile) %>% 
+    summarise(count = n()) %>% 
+  ggplot(aes(y= forcats:: fct_reorder(lead_behaviour_profile,count) , x=count)) +
+  geom_col(fill="purple") +
+  labs(y="behaviour profile of the lead")
+```
+#Sales reps performance analysis
+
+```{r}
+
+cd_profile_tb = cd_profile %>% group_by(sr_id,lead_behaviour_profile) %>% 
+  summarise(number_of_sales = n())
+
+cd_profile_wd = pivot_wider(cd_profile_sr,names_from = lead_behaviour_profile , values_from = number_of_sales,values_fill = 0)
+
+#visualizing the table
+ggplot(data = cd_profile_tb,aes(y=sr_id,x=lead_behaviour_profile)) +
+  geom_tile(aes(fill=number_of_sales),show.legend = TRUE)+
+  theme(panel.background = element_rect(color="blue"))
+
+
+```
+SR at row 8 was the highest performer during the period and should be matched 
+with cat, eagle and wolf MQL
+
+Sales rep at rows 12,21 should be matched with shark MQL
+
+sales rep at rows 8,12,10,20 have shown good results with wolf MQL, and should be matched with those MQL who fall under the wolf profile.
+
+Clearly most of our sales were done with cat MQL, however sales rep at rows 13,18,11,3,15,5 have consistently performed rather poorly even with the "easy" cat 
+MQL, This should be looked into to determine the possible reasons fr such poor performance
+
+On the other hand sales rep at rows 8,12,21,4,10 have performed very well.
+
+
+
+
+
