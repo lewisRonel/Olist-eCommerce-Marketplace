@@ -1,0 +1,245 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+```{r library}
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(reshape)
+library(stringr)
+library(heatmaply)
+
+```
+
+#1-Closed Deal Performance Overview¶
+Now its time to look at the revenue generated after signing the MQL and determine 
+the top revenue generating  business segments
+```{r}
+#start b clearing the global environment so we can start afresh 
+rm()
+#importing the datasets
+
+cd = read.csv('../data/olist_closed_deals_dataset.csv')
+
+order_items = read.csv('../data/olist_order_items_dataset.csv')
+
+orders = read.csv('../data/olist_orders_dataset.csv')
+orders$order_purchase_timestamp = as.Date(x=orders$order_purchase_timestamp,tz="UTC")
+
+products =read.csv('../data/olist_products_dataset.csv')
+
+product_translation = read.csv('../data/product_category_name_translation.csv')
+
+
+
+```
+
+
+```{r}
+#merging all the datasets
+#here we use inner join to get only the data on the 842 seller id 
+data =merge(cd,order_items,by="seller_id", all=FALSE)
+data = merge(data,orders, by="order_id", all=FALSE)
+data = merge(data, products, by="product_id", all=FALSE)
+
+
+#there is a problem with the name of the product name column
+product_translation = product_translation %>% rename(product_category_name = ï..product_category_name) 
+
+#finally a left join on the merged data and translation dataset
+data= merge(data,product_translation, by="product_category_name", all.x=TRUE)
+
+#a look at the merged dataset
+glimpse(data)
+
+```
+```{r}
+#there are column with empty blank cells, replace them with NA
+data = data %>% 
+  mutate(product_category_name = na_if(product_category_name,"")) %>% 
+  mutate(business_segment = na_if(business_segment,"")) %>% 
+  mutate(lead_type = na_if(lead_type,"")) %>% 
+  mutate(lead_behaviour_profile= na_if(lead_behaviour_profile,"")) %>% 
+  mutate(has_company = na_if(has_company,"")) %>% 
+  mutate(has_gtin = na_if(has_gtin,"")) %>% 
+  mutate(average_stock = na_if(average_stock,"")) %>% 
+  mutate(business_type = na_if(business_type,""))
+  
+#keep only the orders delivered to customers
+
+data = subset(data, data$order_status == 'delivered')
+
+#create a year-month column
+data$order_purchase_timestamp_ym = format(as.Date(data$order_purchase_timestamp),
+                                          format="%Y-%m")
+```
+
+
+#what is the monthly revenue from each business segment
+```{r}
+#
+cols = data %>% 
+  group_by(business_segment,price) %>% 
+  summarise(revenue = sum(price)) %>% 
+  arrange(desc(revenue))
+#business segment and monthly revenue
+monthly_revenue_by_segment = data %>% 
+  group_by(order_purchase_timestamp_ym, business_segment) %>% 
+  summarise(monthly_revenue = sum(price)) 
+
+
+#business segment and monthly revenue wide format
+monthly_revenue_by_segment_wide = pivot_wider(data=monthly_revenue_by_segment,
+names_from = business_segment,  values_from = monthly_revenue, values_fill = 0)
+
+#visualizing the results
+ggplot(data=monthly_revenue_by_segment, aes(x=order_purchase_timestamp_ym,y=monthly_revenue,group=1)) + geom_col(position="stack",aes(fill= business_segment)) +
+  theme_dark() +
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))
+
+
+```
+```{r}
+
+# business segment contribution to total revenue during the period
+segment_revenue_contribution = data %>% 
+  group_by( business_segment) %>% 
+  mutate(percentage_of_total_revenue = sum(price))  
+
+  
+  ggplot(data=segment_revenue_contribution, aes(y=percentage_of_total_revenue,x= forcats::fct_reorder(business_segment, percentage_of_total_revenue))) +
+  geom_col(fill="steelblue") + 
+    labs(title="Contribution of each business segment to total revenue", y="revenue", x="business segment") +
+    theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))
+  
+```
+##looking at watches and beauty product sales over the period
+```{r}
+my_list = list("watches","health_beauty")
+watches_beauty = segment_revenue_contribution %>%  
+  subset(segment_revenue_contribution$business_segment %in% my_list)
+
+#
+watches_beauty_tab = watches_beauty %>% 
+  group_by(order_purchase_timestamp_ym,business_segment) %>% 
+  summarise(revenue = sum(price))
+
+ggplot(data=watches_beauty_tab,aes(x=order_purchase_timestamp_ym, y=revenue,fill=business_segment))+
+  geom_col(position="dodge")
+```
+#We will now look deeper into both bsiness segments
+##1-start with watches
+```{r}
+watches = subset(data, data$business_segment == "watches")
+
+# monthly revenue from the watches segment by product category
+monthly_revenue_watches = watches %>% 
+  group_by(order_purchase_timestamp_ym,product_category_name_english ) 
+
+#visualizing the results
+ggplot(data=monthly_revenue_watches,aes(
+  x=order_purchase_timestamp_ym, 
+  y=price, group=1)) + 
+  geom_col(aes(fill= product_category_name_english)) + 
+  labs(y="Revenue", title="Monthly watches revenue by category")
+```
+
+-'watches_gifts' category generated 79.7% of total revenue of the segment.
+
+-'watches_gifts' revenue soared in March and reached its peak in May.This indicates that the sales of watches to be gifted follows a seasonal trend.
+
+#Watches Revenue by Seller
+```{r}
+# Create 'seller - product category' table
+seller_product_category = watches %>% 
+  group_by(seller_id,product_category_name_english) %>% 
+  mutate(revenue =sum(price))
+  
+ggplot(data = seller_product_category,aes(x=forcats::fct_reorder (product_category_name,revenue),y=revenue)) + 
+  geom_col(aes(fill=seller_id)) + 
+  theme(axis.text.x = element_text(angle=90,vjust=0.5,hjust=1))+
+  labs(x="product category")
+```
+
+
+-There are only two sellers of watches on the platform.
+
+-Furthermore, the leading seller generated 97.0% of segment revenue.
+#A look at the two watch sellers
+```{r}
+watch_sellers = watches %>% 
+  subset(select = c(seller_id,won_date, business_segment, lead_type,business_type,price)) %>% 
+  group_by(seller_id,won_date,business_segment,lead_type,business_type) %>% 
+  summarise(sales = sum(price))
+```
+* The leading seller is 'online big', perhaps a large internet-based company with high market share or strong brand awareness.
+
+*And its business type is 'reseller'. That explains why there are irrelevant product categories in 'watches' segment. The fact that a business segment may have unrelated product categories means revenue analysis should be conducted based on 'product category' rather than 'business segment'.
+
+Lastly I will address 'watches gifts' revenue by product to expand understanding of the category.
+#Watches_gifts Revenue by Product
+```{r}
+watches_gift = subset(watches, watches$product_category_name_english == 'watches_gifts')
+
+watches_gift = watches_gift %>% 
+  group_by(seller_id, product_id) %>% 
+  summarise(revenue= sum(price))
+
+ggplot(data=watches_gift,
+       aes(x=revenue,y= forcats:: fct_reorder(product_id,revenue) )) +
+  geom_col(fill="steelblue")
+```
+* most of the revenue from watches bought as a gift is derived from a few key 
+items. This indicates that the market is rather homogenous and a few brands are 
+the market leaders with one of them, vastly outselling the rest
+##start with watches
+```{r}
+health_beauty = subset(data, data$business_segment == "health_beauty")
+
+# total revenue  by product category
+revenue_health = health_beauty %>% 
+  group_by(product_category_name_english ) %>% 
+  summarise(revenue = sum(price)) %>% 
+  mutate(revenue_percentage = 100*(revenue/ sum(revenue)) ) %>% 
+  mutate(revenue_percentage = round(revenue_percentage, digits=1))
+
+#visualising
+ggplot(data=revenue_health, aes(x=product_category_name_english, y=revenue_percentage, fill="pink",group=1)) +
+  geom_area()+
+  labs(y="Percentage of segment revenue", x="product category")+
+  theme(axis.text.x = element_text(angle = 90, vjust=0.5, hjust=1))
+
+
+
+```
+
+```{r}
+
+
+beauty_category = health_beauty %>% 
+  subset(product_category_name_english =="health_beauty") 
+
+beauty_category = beauty_category %>% group_by(product_id) %>% 
+  summarise(revenue = sum(price)) %>%
+  mutate(revenue_perce = 100 * (revenue / sum(revenue)))
+  
+
+ggplot(data = beauty_category, aes(x=product_id, y=revenue_perce)) + 
+  geom_col(show.legend = FALSE) +
+  theme(axis.text.x = element_text(angle=90, vjust=0.5, hjust=1))
+```
+
+```{r}
+beauty_sellers = health_beauty %>% 
+  subset(product_category_name_english == "health_beauty") %>% 
+  group_by(seller_id, lead_type, business_type) %>% 
+  summarise(revenue = sum(price)) %>% 
+  mutate(revenue_pecentage = round(x=100*(revenue/76697.64),digits=1)) %>% 
+  arrange(desc(revenue))  
+
+ggplot(data = beauty_sellers)
+```
+
